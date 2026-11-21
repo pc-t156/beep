@@ -59,7 +59,7 @@
 const SPIN = 0.22;          // auto-spin speed (radians per second)
 const TILT = 0.30;          // camera looks slightly down into the bouquet
 const CAM = 5.0;            // camera distance
-const NUM_HEADS = 7;
+const NUM_HEADS = 5;
 const BLOOM_SECONDS = 2.8;
 
 // ------------------------------------------------------------- helpers
@@ -82,79 +82,112 @@ const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
 // ------------------------------------------------------------- model
 // each point: x y z kind vx vy vz head growth   (v = normal or tangent)
-const PETAL = 0, STAMEN = 1, ANTHER = 2, STEM = 3, PAPER = 4, RIBBON = 5, FILLER = 6, LEAF = 7;
+const PETAL = 0, STAMEN = 1, ANTHER = 2, STEM = 3, PAPER = 4, RIBBON = 5, FILLER = 6, LEAF = 7, PETAL2 = 8;
 const pts = [];
 const put = (p, k, v, h, g) => pts.push(p[0], p[1], p[2], k, v[0], v[1], v[2], h, g);
 
-function petal(base, axis, radial, len, h, gd) {
+// petals and whiskers are stored as polylines and drawn as one-character-wide
+// strokes, so every petal and every whisker stays a separate, clean line
+const LINES = [];   // { k, h, v: [x,y,z, vx,vy,vz, g, ...] }
+
+function petal(base, axis, radial, len, h, gd, kind) {
+  // long, narrow, frilly petal: arches outward, then curls right back at the tip
   const side = norm(cross(radial, axis));
-  const th0 = R(25, 40) * DEG, th1 = R(230, 275) * DEG;
-  const steps = 30, ds = len / steps, ph = R(0, 6);
+  const th0 = R(50, 65) * DEG, th1 = R(215, 250) * DEG;
+  const steps = 26, ds = len / steps, ph = R(0, 6), freq = R(20, 26);
+  const v = [];
   let p = base;
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    const th = th0 + (th1 - th0) * Math.pow(t, 1.35);
+    const th = th0 + (th1 - th0) * Math.pow(t, 2.1);
     const d = norm(add(mul(axis, Math.cos(th)), mul(radial, Math.sin(th))));
     const n = norm(cross(d, side));
-    const w = 0.062 * Math.pow(Math.sin(Math.PI * Math.min(1, 0.12 + t * 0.95)), 0.6) + 0.004;
-    for (let k = -3; k <= 3; k++) {
-      const f = k / 3;
-      const crinkle = 0.018 * Math.sin(t * 30 + ph + f * 2) * Math.abs(f);
-      put(add(add(p, mul(side, w * f)), mul(n, crinkle)), PETAL, n, h, gd + 0.42 * t);
-    }
+    const wave = 0.02 * Math.sin(t * freq + ph);          // ruffled, wavy petal
+    const q = add(p, mul(side, wave));
+    const nn = norm(add(n, mul(side, 0.7 * Math.cos(t * freq + ph))));
+    v.push(q[0], q[1], q[2], nn[0], nn[1], nn[2], gd + 0.42 * t);
     p = add(p, mul(d, ds));
   }
+  LINES.push({ k: kind, h, v });
 }
 
-function stamen(base, axis, radial, len, h, gd) {
-  const d0 = norm(add(mul(axis, Math.cos(0.5)), mul(radial, Math.sin(0.5))));
-  const bend = R(0.5, 0.75), steps = 60, ds = len / steps;
+function stamen(base, axis, radial, len, h, gd, out) {
+  // long whisker: fans out wide, then curves gently outward/up near the tip
+  const ang = R(0.85, 1.15);
+  const d0 = norm(add(mul(axis, Math.cos(ang)), mul(radial, Math.sin(ang))));
+  const bend = R(0.55, 0.8), steps = 20, ds = len / steps;
+  const v = [];
   let p = base;
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    const d = norm(lerp(d0, UP, bend * Math.pow(t, 1.6)));
-    put(p, STAMEN, d, h, gd + 0.15 + 0.55 * t);
+    const d = norm(lerp(d0, out, bend * Math.pow(t, 1.8)));
+    v.push(p[0], p[1], p[2], d[0], d[1], d[2], gd + 0.15 + 0.55 * t);
     p = add(p, mul(d, ds));
   }
+  LINES.push({ k: STAMEN, h, v });
   put(p, ANTHER, UP, h, gd + 0.72);
 }
 
-function flower(base, axis, h) {
+function flower(base, axis, h, out) {
   const [u, v] = basis(axis);
   const spin = R(0, TAU), gd = R(0, 0.08);
   for (let j = 0; j < 6; j++) {
     const a = spin + j * TAU / 6 + R(-0.2, 0.2);
     const r = norm(add(mul(u, Math.cos(a)), mul(v, Math.sin(a))));
-    petal(base, axis, r, R(0.31, 0.37), h, gd);
-  }
-  for (let j = 0; j < 5; j++) {
-    const a = spin + (j + 0.5) * TAU / 5 + R(-0.25, 0.25);
-    const r = norm(add(mul(u, Math.cos(a)), mul(v, Math.sin(a))));
-    stamen(base, axis, r, R(0.36, 0.46), h, gd);
+    petal(base, axis, r, R(0.42, 0.5), h, gd, j % 2 ? PETAL2 : PETAL);
   }
 }
 
 function head(c, h) {
-  const n = [5, 6, 6][Math.floor(R(0, 3))], off = R(0, TAU);
+  const n = 3, off = R(0, TAU);
   for (let i = 0; i < n; i++) {
-    const az = off + i * TAU / n + R(-0.2, 0.2), el = R(0, 30) * DEG;
+    const az = off + i * TAU / n + R(-0.1, 0.1), el = R(5, 25) * DEG;
     const radial = [Math.cos(az), 0, Math.sin(az)];
     const axis = norm(add(mul(radial, Math.cos(el)), mul(UP, Math.sin(el))));
     for (let k = 0; k <= 8; k++) put(add(c, mul(axis, 0.1 * k / 8)), STEM, axis, h, 0);
-    flower(add(c, mul(axis, 0.1)), axis, h);
+    flower(add(c, mul(axis, 0.1)), axis, h, norm(add(axis, [0, 0.35, 0])));
   }
   const axis = norm([R(-.3, .3), 1, R(-.3, .3)]);
-  flower(add(c, mul(axis, 0.06)), axis, h);
+  flower(add(c, mul(axis, 0.06)), axis, h, axis);
+  crown(c, h);
+}
+
+// whiskers: an even, tidy crown around the whole head. Every whisker has the
+// same graceful shape - out sideways, then sweeping smoothly upward - and they
+// are spaced evenly all the way round, in two neat tiers
+function crown(c, h) {
+  const off = R(0, TAU);
+  const tiers = [
+    { n: 10, start: -18, end: 52, len: 0.62, shift: 0 },
+    { n: 10, start: 4, end: 74, len: 0.52, shift: 0.5 },
+  ];
+  for (const tr of tiers) {
+    for (let i = 0; i < tr.n; i++) {
+      const az = off + (i + tr.shift) * TAU / tr.n;
+      const out = [Math.cos(az), 0, Math.sin(az)];
+      const steps = 22, ds = tr.len / steps, v = [];
+      let p = add(c, mul(out, 0.07));
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps;
+        const e = (tr.start + (tr.end - tr.start) * Math.pow(t, 1.7)) * DEG;
+        const d = norm(add(mul(out, Math.cos(e)), mul(UP, Math.sin(e))));
+        v.push(p[0], p[1], p[2], d[0], d[1], d[2], 0.15 + 0.55 * t);
+        p = add(p, mul(d, ds));
+      }
+      LINES.push({ k: STAMEN, h, v });
+      put(p, ANTHER, UP, h, 0.72);
+    }
+  }
 }
 
 const bez = (a, b, c, t) => add(add(mul(a, (1 - t) ** 2), mul(b, 2 * (1 - t) * t)), mul(c, t * t));
 
 // flower heads
-const heads = [[0, 0.95, 0]];
+const heads = [[0, 1.15, 0]];
 { const off = R(0, TAU);
   for (let i = 0; i < NUM_HEADS - 1; i++) {
-    const az = off + i * TAU / (NUM_HEADS - 1) + R(-0.15, 0.15), r = R(0.66, 0.74);
-    heads.push([r * Math.cos(az), 0.42 + 0.22 * (i % 2) + R(-0.04, 0.04), r * Math.sin(az)]);
+    const az = off + i * TAU / (NUM_HEADS - 1) + R(-0.15, 0.15), r = R(0.88, 0.95);
+    heads.push([r * Math.cos(az), 0.45 + 0.25 * (i % 2) + R(-0.04, 0.04), r * Math.sin(az)]);
   } }
 const BLOOM_DELAY = heads.map((_, i) => i === 0 ? 0 : 0.15 + i * 0.18);
 heads.forEach((c, h) => {
@@ -197,7 +230,7 @@ for (let i = 0; i < 34; i++) {
 }
 
 // wrapping paper cone with soft folds and a wavy top edge
-const TIP = -1.3, RIM = 0.02, RR = 0.6, HH = RIM - TIP;
+const TIP = -1.05, RIM = 0.02, RR = 0.6, HH = RIM - TIP;
 for (let i = 0; i < 280; i++) {
   const th = i / 280 * TAU;
   const vmax = 1 + 0.08 * Math.abs(Math.sin(3.5 * th));
@@ -232,6 +265,10 @@ let ymin = 1e9, ymax = -1e9, rmax = 0;
 for (let i = 0; i < NP; i++) {
   const o = i * 9; ymin = Math.min(ymin, D[o + 1]); ymax = Math.max(ymax, D[o + 1]);
   rmax = Math.max(rmax, Math.hypot(D[o], D[o + 2]));
+}
+for (const ln of LINES) for (let j = 0; j < ln.v.length; j += 7) {
+  ymin = Math.min(ymin, ln.v[j + 1]); ymax = Math.max(ymax, ln.v[j + 1]);
+  rmax = Math.max(rmax, Math.hypot(ln.v[j], ln.v[j + 2]));
 }
 const YMID = (ymin + ymax) / 2, YHALF = (ymax - ymin) / 2;
 
@@ -268,7 +305,7 @@ const PALS = [
     stamen: [[0, [40, 60, 120]], [1, [205, 225, 255]]], anther: '#3a2a4a' },
 ];
 // which colour each flower head gets: centre red, ring alternates blue / red
-const HEAD_PAL = [0, 4, 0, 4, 0, 4, 4];
+const HEAD_PAL = [0, 4, 0, 4, 4];
 for (const p of PALS) {
   p.P = ramp(p.petal, 10); p.S = ramp(p.stamen, 6); p.A = cid(p.anther);
 }
@@ -281,8 +318,17 @@ const FILL_C = ramp([[0, [90, 90, 110]], [1, [255, 255, 255]]], 4);
 const HEART_C = ramp([[0, [90, 20, 50]], [1, [255, 110, 160]]], 5);
 const STAR_C = ramp([[0, [50, 50, 80]], [1, [230, 230, 255]]], 4);
 
-const PCH = '.:-=+*#%@@';
-const PAPCH = '.:--==##';
+const PCH = '.:-=+*%#@0';
+const PAPCH = ':--==###';
+// one character per cell that follows the line's real slope, so a whisker
+// reads as a single thin stroke instead of a bundle of ////
+const strokeChar = (dx, dy, fy) => {
+  const ax = Math.abs(dx), ay = Math.abs(dy);
+  if (ay > ax * 2.4) return '|';
+  if (ay * 2.4 < ax) return fy > 0.62 ? '_' : fy < 0.3 ? '`' : '-';
+  if (ay < ax) return fy > 0.5 ? '_' : (dx * dy > 0 ? '/' : '\\');
+  return dx * dy > 0 ? '/' : '\\';
+};
 const lineChar = (dx, dy) => {
   let a = Math.atan2(dy, dx) / DEG; a = ((a % 180) + 180) % 180;
   return a < 22.5 || a >= 157.5 ? '-' : a < 67.5 ? '/' : a < 112.5 ? '|' : '\\';
@@ -300,7 +346,7 @@ function resize() {
     c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
     c.style.width = W + 'px'; c.style.height = H + 'px';
   }
-  cw = clamp(W / 260, 3.2, 7);
+  cw = clamp(W / 290, 2.5, 6);
   ctx.font = '100px ' + FONT;
   const ratio = ctx.measureText('M').width / 100 || 0.6;
   fs = cw / ratio; ch = fs * 1.08;
@@ -308,8 +354,8 @@ function resize() {
   zb = new Float32Array(cols * rows);
   chars = new Array(cols * rows);
   cols_ = new Int16Array(cols * rows);
-  const top = 44, bottom = 104, avail = H - top - bottom;
-  S = Math.min(avail / 2 / YHALF, (W * 0.49) / rmax) * (CAM - rmax);
+  const top = 24, bottom = 96, avail = H - top - bottom;
+  S = Math.min(avail / 2 / YHALF, (W * (W < H ? 0.62 : 0.49)) / rmax) * (CAM - rmax);
   cx = W / 2; cy = top + avail / 2;
   stars = [];
   for (let i = 0; i < cols * rows / 140; i++)
@@ -375,7 +421,7 @@ function frame(nowMs) {
     const c = (px / cw) | 0, r = (py / ch) | 0;
     if (c >= cols || r >= rows) continue;
     const k = D[o + 3], idx = r * cols + c;
-    const key = k === PETAL ? inv + 0.006 : inv;
+    const key = (k === PETAL || k === PETAL2) ? inv + 0.006 : inv;
     if (key <= zb[idx]) continue;
     zb[idx] = key;
     const near = clamp((inv * CAM - fogBase) / fogSpan, 0, 1);
@@ -384,13 +430,14 @@ function frame(nowMs) {
     const by = ct * ay - st * bz0, bz = st * ay + ct * bz0;
     const P = PALS[HEAD_PAL[h] ?? 0];
 
-    if (k === PETAL) {
-      const lit = 0.3 + 0.6 * Math.abs(bx * L[0] + by * L[1] + bz * L[2]) + 0.2 * near;
+    if (k === PETAL || k === PETAL2) {
+      let lit = 0.22 + 0.68 * Math.abs(bx * L[0] + by * L[1] + bz * L[2]) + 0.2 * near;
+      lit = k === PETAL2 ? lit * 0.62 : Math.min(1, lit * 1.08);   // neighbouring petals alternate light / dark
       const lv = clamp(Math.floor(lit * 10), 0, 9);
       chars[idx] = PCH[lv]; cols_[idx] = P.P[lv];
     } else if (k === STAMEN) {
-      chars[idx] = lineChar(bx / cw, by / ch);
-      cols_[idx] = P.S[clamp(Math.floor((0.1 + 0.6 * near) * 6), 0, 5)];
+      chars[idx] = strokeChar(bx / cw, by / ch, py / ch - r);
+      cols_[idx] = P.S[clamp(Math.floor((0.35 + 0.65 * near) * 6), 0, 5)];
     } else if (k === ANTHER) {
       chars[idx] = near > 0.45 ? 'o' : '.'; cols_[idx] = P.A;
     } else if (k === STEM) {
@@ -401,7 +448,7 @@ function frame(nowMs) {
       cols_[idx] = LEAF_C[clamp(Math.floor((0.2 + 0.8 * near) * 6), 0, 5)];
     } else if (k === PAPER) {
       const facing = bz < 0, s = facing ? 1 : -1;
-      let lit = 0.2 + 0.8 * Math.max(0, s * (bx * L[0] + by * L[1] + bz * L[2]));
+      let lit = 0.38 + 0.62 * Math.max(0, s * (bx * L[0] + by * L[1] + bz * L[2]));
       lit *= 0.65 + 0.35 * near;
       const lv = clamp(Math.floor(lit * 8), 0, 7);
       chars[idx] = PAPCH[lv]; cols_[idx] = (facing ? PAPER_OUT : PAPER_IN)[lv];
@@ -412,6 +459,52 @@ function frame(nowMs) {
     } else { // filler
       chars[idx] = near > 0.55 ? 'o' : near > 0.3 ? '*' : '.';
       cols_[idx] = FILL_C[clamp(Math.floor((0.25 + 0.75 * near) * 4), 0, 3)];
+    }
+  }
+
+  // petals and whiskers: one character per step along each line (no doubled strokes)
+  const pc = [], pr = [], pz = [], vx = [], vy = [], vz = [];
+  for (const ln of LINES) {
+    const v = ln.v, n = v.length / 7, h = ln.h, lim = prog[h];
+    if (v[6] > lim) continue;
+    const P = PALS[HEAD_PAL[h] ?? 0];
+    for (let j = 0; j < n; j++) {
+      const o = j * 7, x = v[o], y = v[o + 1] - YMID, z = v[o + 2];
+      const rx = ca * x + sa * z, rz0 = -sa * x + ca * z;
+      const ry = ct * y - st * rz0, rz = st * y + ct * rz0;
+      const inv = 1 / (rz + CAM);
+      pc[j] = (cx + rx * inv * S) / cw; pr[j] = (cy - ry * inv * S) / ch; pz[j] = inv;
+      const ax = v[o + 3], ay = v[o + 4], az = v[o + 5];
+      const bz0 = -sa * ax + ca * az;
+      vx[j] = ca * ax + sa * az; vy[j] = ct * ay - st * bz0; vz[j] = st * ay + ct * bz0;
+    }
+    const isPetal = ln.k !== STAMEN;
+    for (let j = 0; j < n - 1; j++) {
+      if (v[(j + 1) * 7 + 6] > lim) break;
+      const c0 = pc[j], r0 = pr[j], dc = pc[j + 1] - c0, dr = pr[j + 1] - r0;
+      const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dc), Math.abs(dr))));
+      // character for this segment
+      let chr, col;
+      const near = clamp((pz[j] * CAM - fogBase) / fogSpan, 0, 1);
+      if (isPetal) {
+        let lit = 0.25 + 0.65 * Math.abs(vx[j] * L[0] + vy[j] * L[1] + vz[j] * L[2]) + 0.2 * near;
+        lit = ln.k === PETAL2 ? lit * 0.66 : Math.min(1, lit * 1.08);
+        const lv = clamp(Math.floor(lit * 10), 0, 9);
+        chr = PCH[Math.max(4, lv)]; col = P.P[lv];
+      } else {
+        const ax = Math.abs(dc), ay = Math.abs(dr);
+        chr = ay > ax * 2.2 ? '|' : ay * 2.2 < ax ? '-' : (dc * dr > 0 ? '\\' : '/');
+        col = P.S[clamp(Math.floor((0.35 + 0.65 * near) * 6), 0, 5)];
+      }
+      for (let k = (j === 0 ? 0 : 1); k <= steps; k++) {
+        const t = k / steps;
+        const c = Math.round(c0 + dc * t), r = Math.round(r0 + dr * t);
+        if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+        const idx = r * cols + c;
+        const key = pz[j] + (pz[j + 1] - pz[j]) * t + (isPetal ? 0.006 : 0);
+        if (key <= zb[idx]) continue;
+        zb[idx] = key; chars[idx] = chr; cols_[idx] = col;
+      }
     }
   }
 
