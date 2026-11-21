@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>beep boop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,400;1,500&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #04030a; }
+  body {
+    background: radial-gradient(ellipse at 50% 38%, #171336 0%, #0a0818 50%, #030208 100%);
+    touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab;
+  }
+  body.dragging { cursor: grabbing; }
+  canvas { position: fixed; left: 0; top: 0; display: block; pointer-events: none; }
+  #glow { filter: blur(6px) saturate(1.7) brightness(1.7); opacity: 1; }
+  .pill {
+    position: fixed; top: 14px; z-index: 3;
+    background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.16);
+    color: #d6cfee; border-radius: 999px; padding: 5px 13px 6px;
+    font: italic 15px 'Cormorant Garamond', Georgia, serif; cursor: pointer;
+    transition: background .2s, border-color .2s;
+  }
+  .pill:hover { background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.3); }
+  #bloom { left: 14px; }
+  #caption {
+    position: fixed; left: 0; right: 0; bottom: 22px; text-align: center; z-index: 3;
+    pointer-events: none;
+  }
+  #name {
+    font: italic 500 24px 'Cormorant Garamond', Georgia, serif; color: #f3ecff;
+    letter-spacing: .02em; transition: opacity .35s; text-shadow: 0 0 14px rgba(255,180,220,.35);
+  }
+  #msg {
+    display: inline-block; margin-top: 6px; padding: 2px 8px; min-width: 40px;
+    font: 12px 'JetBrains Mono', ui-monospace, monospace; letter-spacing: .14em;
+    color: #ff8fb4; text-shadow: 0 0 10px rgba(255,90,140,.6);
+    pointer-events: auto; outline: none; cursor: text; border-radius: 4px;
+  }
+  #msg:focus { background: rgba(255,255,255,.06); }
+  #hint {
+    margin-top: 6px; font: 10px 'JetBrains Mono', ui-monospace, monospace;
+    letter-spacing: .12em; color: rgba(214,207,238,.38);
+  }
+</style>
+</head>
+<body>
+<canvas id="glow"></canvas>
+<canvas id="ascii"></canvas>
+<div id="caption">
+  <div id="name">I love you, my little hyrax</div>
+  <div id="msg" contenteditable="true" spellcheck="false">&#9825; awa awa &#9825;</div>
+</div>
+
+<script>
+(() => {
+// ------------------------------------------------------------- settings
+const SPIN = 0.22;          // auto-spin speed (radians per second)
+const TILT = 0.30;          // camera looks slightly down into the bouquet
+const CAM = 5.0;            // camera distance
+const NUM_HEADS = 7;
+const BLOOM_SECONDS = 2.8;
+
+// ------------------------------------------------------------- helpers
+let seed = 20261121;
+const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+  let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+const R = (a, b) => a + (b - a) * rnd();
+const TAU = Math.PI * 2, DEG = Math.PI / 180;
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]];
+const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; };
+const lerp = (a, b, t) => add(mul(a, 1 - t), mul(b, t));
+const basis = ax => { const h = Math.abs(ax[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0];
+  const u = norm(cross(ax, h)); return [u, norm(cross(ax, u))]; };
+const UP = [0, 1, 0];
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+// ------------------------------------------------------------- model
+// each point: x y z kind vx vy vz head growth   (v = normal or tangent)
+const PETAL = 0, STAMEN = 1, ANTHER = 2, STEM = 3, PAPER = 4, RIBBON = 5, FILLER = 6, LEAF = 7;
+const pts = [];
+const put = (p, k, v, h, g) => pts.push(p[0], p[1], p[2], k, v[0], v[1], v[2], h, g);
+
+function petal(base, axis, radial, len, h, gd) {
+  const side = norm(cross(radial, axis));
+  const th0 = R(25, 40) * DEG, th1 = R(230, 275) * DEG;
+  const steps = 30, ds = len / steps, ph = R(0, 6);
+  let p = base;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const th = th0 + (th1 - th0) * Math.pow(t, 1.35);
+    const d = norm(add(mul(axis, Math.cos(th)), mul(radial, Math.sin(th))));
+    const n = norm(cross(d, side));
+    const w = 0.062 * Math.pow(Math.sin(Math.PI * Math.min(1, 0.12 + t * 0.95)), 0.6) + 0.004;
+    for (let k = -3; k <= 3; k++) {
+      const f = k / 3;
+      const crinkle = 0.018 * Math.sin(t * 30 + ph + f * 2) * Math.abs(f);
+      put(add(add(p, mul(side, w * f)), mul(n, crinkle)), PETAL, n, h, gd + 0.42 * t);
+    }
+    p = add(p, mul(d, ds));
+  }
+}
+
+function stamen(base, axis, radial, len, h, gd) {
+  const d0 = norm(add(mul(axis, Math.cos(0.5)), mul(radial, Math.sin(0.5))));
+  const bend = R(0.5, 0.75), steps = 60, ds = len / steps;
+  let p = base;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const d = norm(lerp(d0, UP, bend * Math.pow(t, 1.6)));
+    put(p, STAMEN, d, h, gd + 0.15 + 0.55 * t);
+    p = add(p, mul(d, ds));
+  }
+  put(p, ANTHER, UP, h, gd + 0.72);
+}
+
+function flower(base, axis, h) {
+  const [u, v] = basis(axis);
+  const spin = R(0, TAU), gd = R(0, 0.08);
+  for (let j = 0; j < 6; j++) {
+    const a = spin + j * TAU / 6 + R(-0.2, 0.2);
+    const r = norm(add(mul(u, Math.cos(a)), mul(v, Math.sin(a))));
+    petal(base, axis, r, R(0.31, 0.37), h, gd);
+  }
+  for (let j = 0; j < 5; j++) {
+    const a = spin + (j + 0.5) * TAU / 5 + R(-0.25, 0.25);
+    const r = norm(add(mul(u, Math.cos(a)), mul(v, Math.sin(a))));
+    stamen(base, axis, r, R(0.36, 0.46), h, gd);
+  }
+}
+
+function head(c, h) {
+  const n = [5, 6, 6][Math.floor(R(0, 3))], off = R(0, TAU);
+  for (let i = 0; i < n; i++) {
+    const az = off + i * TAU / n + R(-0.2, 0.2), el = R(0, 30) * DEG;
+    const radial = [Math.cos(az), 0, Math.sin(az)];
+    const axis = norm(add(mul(radial, Math.cos(el)), mul(UP, Math.sin(el))));
+    for (let k = 0; k <= 8; k++) put(add(c, mul(axis, 0.1 * k / 8)), STEM, axis, h, 0);
+    flower(add(c, mul(axis, 0.1)), axis, h);
+  }
+  const axis = norm([R(-.3, .3), 1, R(-.3, .3)]);
+  flower(add(c, mul(axis, 0.06)), axis, h);
+}
+
+const bez = (a, b, c, t) => add(add(mul(a, (1 - t) ** 2), mul(b, 2 * (1 - t) * t)), mul(c, t * t));
+
+// flower heads
+const heads = [[0, 0.95, 0]];
+{ const off = R(0, TAU);
+  for (let i = 0; i < NUM_HEADS - 1; i++) {
+    const az = off + i * TAU / (NUM_HEADS - 1) + R(-0.15, 0.15), r = R(0.66, 0.74);
+    heads.push([r * Math.cos(az), 0.42 + 0.22 * (i % 2) + R(-0.04, 0.04), r * Math.sin(az)]);
+  } }
+const BLOOM_DELAY = heads.map((_, i) => i === 0 ? 0 : 0.15 + i * 0.18);
+heads.forEach((c, h) => {
+  head(c, h);
+  const base = [0, -0.85, 0], ctrl = [c[0] * 0.2, (base[1] + c[1]) / 2, c[2] * 0.2];
+  let prev = base;
+  for (let i = 1; i <= 50; i++) {
+    const p = bez(base, ctrl, c, i / 50);
+    put(p, STEM, norm([p[0] - prev[0], p[1] - prev[1], p[2] - prev[2]]), -1, 0);
+    prev = p;
+  }
+});
+
+// long green leaves spilling over the paper
+for (let i = 0; i < 11; i++) {
+  const az = i * TAU / 11 + R(-0.2, 0.2);
+  const radial = [Math.cos(az), 0, Math.sin(az)];
+  let p = add([0, -0.05, 0], mul(radial, 0.12));
+  let el = R(45, 70) * DEG;
+  const len = R(0.5, 0.7), steps = 40, side = norm(cross(radial, UP));
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    const e = el - t * R(1.0, 1.3) * 1.2;      // droops as it grows
+    const d = norm(add(mul(radial, Math.cos(e)), mul(UP, Math.sin(e))));
+    const w = 0.03 * Math.sin(Math.PI * Math.min(1, 0.1 + t)) + 0.003;
+    for (let k = -2; k <= 2; k++) put(add(p, mul(side, w * k / 2)), LEAF, d, -1, 0);
+    p = add(p, mul(d, len / steps));
+  }
+}
+
+// baby's breath filler between the lilies
+for (let i = 0; i < 34; i++) {
+  const az = R(0, TAU), r = R(0.25, 0.8);
+  const y = R(0.05, 0.8 - r * 0.4);
+  const c = [r * Math.cos(az), y, r * Math.sin(az)];
+  for (let k = 0; k < 16; k++) {
+    const o = norm([R(-1, 1), R(-0.4, 1), R(-1, 1)]);
+    put(add(c, mul(o, R(0.01, 0.06))), FILLER, UP, i % NUM_HEADS, 0.35);
+  }
+}
+
+// wrapping paper cone with soft folds and a wavy top edge
+const TIP = -1.3, RIM = 0.02, RR = 0.6, HH = RIM - TIP;
+for (let i = 0; i < 280; i++) {
+  const th = i / 280 * TAU;
+  const vmax = 1 + 0.08 * Math.abs(Math.sin(3.5 * th));
+  for (let j = 0; j <= 85; j++) {
+    const v = j / 85 * vmax;
+    const fold = 1 + 0.06 * Math.sin(7 * th + v * 1.5) * v;
+    const r = RR * v * fold;
+    let n = norm([Math.cos(th) * HH, -RR, Math.sin(th) * HH]);
+    n = norm(add(n, mul([-Math.sin(th), 0, Math.cos(th)], -0.42 * Math.cos(7 * th + v * 1.5) * v)));
+    put([r * Math.cos(th), TIP + HH * v, r * Math.sin(th)], PAPER, n, -1, 0);
+  }
+}
+
+// satin ribbon: band, bow and tails
+{ const v = 0.3, y = TIP + HH * v, r = RR * v * 1.07 + 0.01;
+  for (let i = 0; i < 160; i++) {
+    const th = i / 160 * TAU;
+    for (let k = -2; k <= 2; k++)
+      put([r * Math.cos(th), y + k * 0.012, r * Math.sin(th)], RIBBON, [-Math.sin(th), 0, Math.cos(th)], -1, 0);
+  }
+  for (const s of [-1, 1]) {
+    for (let i = 0; i <= 30; i++) {
+      const t = i / 30;
+      const p = [s * (0.02 + 0.08 * t), y - 0.32 * t, -r - 0.02 + 0.02 * Math.sin(t * 6)];
+      put(p, RIBBON, norm([s * 0.08, -0.32, 0]), -1, 0);
+    }
+  } }
+
+const D = new Float32Array(pts);
+const NP = D.length / 9;
+let ymin = 1e9, ymax = -1e9, rmax = 0;
+for (let i = 0; i < NP; i++) {
+  const o = i * 9; ymin = Math.min(ymin, D[o + 1]); ymax = Math.max(ymax, D[o + 1]);
+  rmax = Math.max(rmax, Math.hypot(D[o], D[o + 2]));
+}
+const YMID = (ymin + ymax) / 2, YHALF = (ymax - ymin) / 2;
+
+// ------------------------------------------------------------- colours
+const COL = [], CMAP = new Map();
+const cid = s => { let i = CMAP.get(s); if (i === undefined) { i = COL.length; COL.push(s); CMAP.set(s, i); } return i; };
+const hex = c => '#' + c.map(v => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0')).join('');
+function ramp(stops, n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 1 : i / (n - 1);
+    let k = 0; while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
+    const [t0, c0] = stops[k], [t1, c1] = stops[k + 1];
+    const f = clamp((t - t0) / (t1 - t0), 0, 1);
+    out.push(cid(hex(c0.map((v, j) => v + (c1[j] - v) * f))));
+  }
+  return out;
+}
+const PALS = [
+  { name: 'Crimson Higanbana',
+    petal: [[0, [70, 0, 10]], [.55, [228, 26, 30]], [.8, [255, 64, 46]], [1, [255, 120, 96]]],
+    stamen: [[0, [95, 0, 12]], [1, [255, 80, 72]]], anther: '#ffb347' },
+  { name: 'Moonlight White',
+    petal: [[0, [55, 52, 78]], [.6, [214, 210, 236]], [1, [255, 255, 255]]],
+    stamen: [[0, [70, 70, 95]], [1, [248, 246, 255]]], anther: '#ffd27a' },
+  { name: 'Blush Pink',
+    petal: [[0, [70, 8, 40]], [.6, [255, 100, 168]], [1, [255, 205, 228]]],
+    stamen: [[0, [90, 18, 52]], [1, [255, 140, 196]]], anther: '#fff0a8' },
+  { name: 'Golden Lycoris',
+    petal: [[0, [70, 38, 0]], [.6, [255, 186, 36]], [1, [255, 246, 175]]],
+    stamen: [[0, [90, 52, 0]], [1, [255, 214, 90]]], anther: '#ff8a3d' },
+  { name: 'Blue',
+    petal: [[0, [8, 14, 70]], [.55, [40, 80, 235]], [.8, [80, 130, 255]], [1, [170, 200, 255]]],
+    stamen: [[0, [40, 60, 120]], [1, [205, 225, 255]]], anther: '#3a2a4a' },
+];
+// which colour each flower head gets: centre red, ring alternates blue / red
+const HEAD_PAL = [0, 4, 0, 4, 0, 4, 4];
+for (const p of PALS) {
+  p.P = ramp(p.petal, 10); p.S = ramp(p.stamen, 6); p.A = cid(p.anther);
+}
+const STEM_C = ramp([[0, [15, 55, 25]], [1, [95, 190, 80]]], 6);
+const LEAF_C = ramp([[0, [12, 50, 22]], [.6, [50, 150, 60]], [1, [140, 220, 110]]], 6);
+const PAPER_OUT = ramp([[0, [70, 52, 34]], [.5, [190, 160, 118]], [1, [252, 238, 208]]], 8);
+const PAPER_IN = ramp([[0, [38, 28, 20]], [1, [150, 120, 86]]], 8);
+const RIB_C = ramp([[0, [110, 30, 70]], [1, [255, 170, 205]]], 6);
+const FILL_C = ramp([[0, [90, 90, 110]], [1, [255, 255, 255]]], 4);
+const HEART_C = ramp([[0, [90, 20, 50]], [1, [255, 110, 160]]], 5);
+const STAR_C = ramp([[0, [50, 50, 80]], [1, [230, 230, 255]]], 4);
+
+const PCH = '.:-=+*#%@@';
+const PAPCH = '.:--==##';
+const lineChar = (dx, dy) => {
+  let a = Math.atan2(dy, dx) / DEG; a = ((a % 180) + 180) % 180;
+  return a < 22.5 || a >= 157.5 ? '-' : a < 67.5 ? '/' : a < 112.5 ? '|' : '\\';
+};
+
+// ------------------------------------------------------------- canvas
+const A = document.getElementById('ascii'), B = document.getElementById('glow');
+const ctx = A.getContext('2d'), gctx = B.getContext('2d');
+let W, H, dpr, cw, ch, fs, cols, rows, S, cx, cy, zb, chars, cols_, stars = [];
+const FONT = '"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace';
+
+function resize() {
+  W = innerWidth; H = innerHeight; dpr = Math.min(2, devicePixelRatio || 1);
+  for (const c of [A, B]) {
+    c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+    c.style.width = W + 'px'; c.style.height = H + 'px';
+  }
+  cw = clamp(W / 260, 3.2, 7);
+  ctx.font = '100px ' + FONT;
+  const ratio = ctx.measureText('M').width / 100 || 0.6;
+  fs = cw / ratio; ch = fs * 1.08;
+  cols = Math.ceil(W / cw); rows = Math.ceil(H / ch);
+  zb = new Float32Array(cols * rows);
+  chars = new Array(cols * rows);
+  cols_ = new Int16Array(cols * rows);
+  const top = 44, bottom = 104, avail = H - top - bottom;
+  S = Math.min(avail / 2 / YHALF, (W * 0.49) / rmax) * (CAM - rmax);
+  cx = W / 2; cy = top + avail / 2;
+  stars = [];
+  for (let i = 0; i < cols * rows / 140; i++)
+    stars.push([Math.floor(Math.random() * cols), Math.floor(Math.random() * rows), Math.random() * TAU]);
+}
+
+// floating hearts
+const hearts = [];
+function spawnHeart(initial) {
+  hearts.push({ x: Math.random() * W, y: initial ? Math.random() * H : H + 10,
+    vy: 12 + Math.random() * 22, amp: 6 + Math.random() * 18, ph: Math.random() * TAU });
+}
+for (let i = 0; i < 26; i++) spawnHeart(true);
+
+// ------------------------------------------------------------- state
+let pal = 0, dragOffset = 0, bloomStart = performance.now() / 1000;
+const prog = new Float32Array(NUM_HEADS);
+const L = norm([-0.4, 0.75, -0.55]);
+const buckets = [];
+
+function frame(nowMs) {
+  const now = nowMs / 1000;
+  const angle = now * SPIN + dragOffset;
+  const ca = Math.cos(angle), sa = Math.sin(angle), ct = Math.cos(TILT), st = Math.sin(TILT);
+  const bt = now - bloomStart;
+  for (let h = 0; h < NUM_HEADS; h++) {
+    const p = clamp((bt - BLOOM_DELAY[h]) / BLOOM_SECONDS, 0, 1);
+    prog[h] = (1 - Math.pow(1 - p, 3)) * 0.74;
+  }
+
+  zb.fill(-1); chars.fill(undefined);
+  const N = cols * rows;
+
+  // background: twinkling stars and drifting hearts
+  for (const [c, r, ph] of stars) {
+    const b = Math.sin(now * 1.3 + ph);
+    if (b > 0.35) { const i = r * cols + c; chars[i] = b > 0.92 ? '*' : b > 0.7 ? '+' : '.';
+      cols_[i] = STAR_C[b > 0.85 ? 3 : b > 0.6 ? 2 : 1]; }
+  }
+  const dt = Math.min(0.05, now - (frame.last || now)); frame.last = now;
+  for (let k = hearts.length - 1; k >= 0; k--) {
+    const hh = hearts[k]; hh.y -= hh.vy * dt;
+    if (hh.y < -10) { hearts.splice(k, 1); spawnHeart(false); continue; }
+    const x = hh.x + Math.sin(now * 0.8 + hh.ph) * hh.amp;
+    const c = Math.floor(x / cw), r = Math.floor(hh.y / ch);
+    if (c >= 0 && c < cols && r >= 0 && r < rows) {
+      const i = r * cols + c; chars[i] = '♥';
+      cols_[i] = HEART_C[clamp(Math.floor((hh.y / H) * 5), 0, 4)];
+    }
+  }
+
+  // the bouquet
+  const fogBase = CAM / (CAM + rmax), fogSpan = CAM / (CAM - rmax) - fogBase;
+  for (let i = 0; i < NP; i++) {
+    const o = i * 9, h = D[o + 7];
+    if (h >= 0 && D[o + 8] > prog[h]) continue;
+    const x = D[o], y = D[o + 1] - YMID, z = D[o + 2];
+    const rx = ca * x + sa * z, rz0 = -sa * x + ca * z;
+    const ry = ct * y - st * rz0, rz = st * y + ct * rz0;
+    const inv = 1 / (rz + CAM);
+    const px = cx + rx * inv * S, py = cy - ry * inv * S;
+    if (px < 0 || py < 0) continue;
+    const c = (px / cw) | 0, r = (py / ch) | 0;
+    if (c >= cols || r >= rows) continue;
+    const k = D[o + 3], idx = r * cols + c;
+    const key = k === PETAL ? inv + 0.006 : inv;
+    if (key <= zb[idx]) continue;
+    zb[idx] = key;
+    const near = clamp((inv * CAM - fogBase) / fogSpan, 0, 1);
+    const ax = D[o + 4], ay = D[o + 5], az = D[o + 6];
+    const bx = ca * ax + sa * az, bz0 = -sa * ax + ca * az;
+    const by = ct * ay - st * bz0, bz = st * ay + ct * bz0;
+    const P = PALS[HEAD_PAL[h] ?? 0];
+
+    if (k === PETAL) {
+      const lit = 0.3 + 0.6 * Math.abs(bx * L[0] + by * L[1] + bz * L[2]) + 0.2 * near;
+      const lv = clamp(Math.floor(lit * 10), 0, 9);
+      chars[idx] = PCH[lv]; cols_[idx] = P.P[lv];
+    } else if (k === STAMEN) {
+      chars[idx] = lineChar(bx / cw, by / ch);
+      cols_[idx] = P.S[clamp(Math.floor((0.1 + 0.6 * near) * 6), 0, 5)];
+    } else if (k === ANTHER) {
+      chars[idx] = near > 0.45 ? 'o' : '.'; cols_[idx] = P.A;
+    } else if (k === STEM) {
+      chars[idx] = lineChar(bx / cw, by / ch);
+      cols_[idx] = STEM_C[clamp(Math.floor((0.25 + 0.75 * near) * 6), 0, 5)];
+    } else if (k === LEAF) {
+      chars[idx] = lineChar(bx / cw, by / ch);
+      cols_[idx] = LEAF_C[clamp(Math.floor((0.2 + 0.8 * near) * 6), 0, 5)];
+    } else if (k === PAPER) {
+      const facing = bz < 0, s = facing ? 1 : -1;
+      let lit = 0.2 + 0.8 * Math.max(0, s * (bx * L[0] + by * L[1] + bz * L[2]));
+      lit *= 0.65 + 0.35 * near;
+      const lv = clamp(Math.floor(lit * 8), 0, 7);
+      chars[idx] = PAPCH[lv]; cols_[idx] = (facing ? PAPER_OUT : PAPER_IN)[lv];
+    } else if (k === RIBBON) {
+      const lc = lineChar(bx / cw, by / ch);
+      chars[idx] = lc === '-' ? '~' : lc;
+      cols_[idx] = RIB_C[clamp(Math.floor((0.3 + 0.7 * near) * 6), 0, 5)];
+    } else { // filler
+      chars[idx] = near > 0.55 ? 'o' : near > 0.3 ? '*' : '.';
+      cols_[idx] = FILL_C[clamp(Math.floor((0.25 + 0.75 * near) * 4), 0, 3)];
+    }
+  }
+
+  // draw, grouped by colour
+  for (let i = 0; i < COL.length; i++) (buckets[i] || (buckets[i] = [])).length = 0;
+  for (let i = 0; i < N; i++) if (chars[i] !== undefined) buckets[cols_[i]].push(i);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = fs + 'px ' + FONT; ctx.textBaseline = 'top';
+  for (let c = 0; c < COL.length; c++) {
+    const b = buckets[c]; if (!b.length) continue;
+    ctx.fillStyle = COL[c];
+    for (let j = 0; j < b.length; j++) {
+      const i = b[j]; ctx.fillText(chars[i], (i % cols) * cw, ((i / cols) | 0) * ch);
+    }
+  }
+  gctx.setTransform(1, 0, 0, 1, 0, 0);
+  gctx.clearRect(0, 0, B.width, B.height);
+  gctx.drawImage(A, 0, 0);
+  requestAnimationFrame(frame);
+}
+
+// ------------------------------------------------------------- interaction
+const nameEl = document.getElementById('name'), msgEl = document.getElementById('msg');
+function setPal(i) {
+  pal = i; nameEl.style.opacity = 0;
+  setTimeout(() => { nameEl.textContent = PALS[pal].name; nameEl.style.opacity = 1; }, 250);
+}
+let down = null, dragged = false;
+addEventListener('pointerdown', e => {
+  if (e.target.closest('#msg')) return;
+  if (document.activeElement === msgEl) msgEl.blur();
+  down = { x: e.clientX, off: dragOffset }; dragged = false;
+});
+addEventListener('pointermove', e => {
+  if (!down) return;
+  const dx = e.clientX - down.x;
+  if (Math.abs(dx) > 6) { dragged = true; document.body.classList.add('dragging'); }
+  if (dragged) dragOffset = down.off + dx * 0.008;
+});
+addEventListener('pointerup', () => {
+  down = null; document.body.classList.remove('dragging');
+});
+
+try { const saved = localStorage.getItem('lily-msg'); if (saved) msgEl.textContent = saved; } catch (e) {}
+msgEl.addEventListener('input', () => { try { localStorage.setItem('lily-msg', msgEl.textContent); } catch (e) {} });
+msgEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); msgEl.blur(); } });
+
+addEventListener('resize', resize);
+resize();
+(document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(resize);
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
